@@ -14,8 +14,12 @@ python-dotenv
 
 # Stage 2 (PC API GUI)
 PySide6>=6.6
-PyYAML
-opencv-python
+# PyYAML 已移除：全仓库无任何 yaml 使用（原为历史遗留）
+# opencv 仅用于摄像头抓帧（cv2.VideoCapture + imwrite），不用 highgui 窗口；
+# headless 版功能等价且包体更小（实测 Linux 打包 -35MB），故改用 headless。
+# 注意：opencv-python 与 opencv-python-headless 提供同一个 cv2 包，不可共存，
+# 切换前请先 `pip uninstall -y opencv-python`。
+opencv-python-headless
 
 # Stage 3 (视频会议模式)
 pyaudiowpatch>=0.2.11     # WASAPI loopback 采集系统音频

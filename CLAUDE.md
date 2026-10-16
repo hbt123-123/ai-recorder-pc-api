@@ -6,29 +6,31 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 AI 录音 · **PC 云 API 版**：PySide6 桌面应用，录音 + 实时拍照 + 云 ASR 转写 + VLM 图片描述 + LLM 图文融合笔记。自包含、独立运行，是「AI 录音」三版本（PC API / PC 本地 / 安卓）之一。本仓库仅含 PC API 版。
 
-VLM 固定阿里云百炼 `qwen-vl-max`、LLM 固定 DeepSeek `deepseek-v4-flash`，均硬编码、OpenAI 兼容；用户唯一需选择的只是 ASR 档位。
+VLM 主用智谱 `glm-4.6v-flash`（失败切百炼 `qwen-vl-max`）、LLM 主用智谱 `glm-4.7-flash`（失败切 DeepSeek `deepseek-v4-flash`），均硬编码、OpenAI 兼容；用户唯一需选择的只是 ASR 档位。
+
+> 命令与引擎摘要以 `AGENTS.md` 为准（本文件「常用命令」段落曾引用已删除的脚本）。
 
 ## 常用命令
 
 ```bash
-# 必须在本仓库根目录执行（main.py 用 sys.path.insert + 相对路径 ./data/）
+# 启动 GUI（main.py 会 sys.path.insert + os.chdir 到自身目录，故 cwd 无关）
 python main.py
 
 # 虚拟环境（Windows）
 myenv/Scripts/activate
 pip install -r requirements.txt
 
-# 配置凭证（.env 已 gitignored）
+# 配置凭证（.env 已 gitignored；注意 credentials.py 对多个 key 是 _require，缺一即崩）
 cp .env.example .env   # 填入真实 API key
 
-# 云 API 连通性诊断（不启 GUI，直调 core 连接器；需 ~/.airecorder/config.json + .env + data/staging 测试素材）
-python test_cloud_api.py
+# AI 链路连通性诊断（不启 GUI，直调 core 连接器；需 .env + 网络）
+python test_ai_chains.py --chain llm   # 取值：llm|vlm|asr_free|asr_realtime|asr_pro|asr_lite
 
-# pro_pro tier 端到端验证
-python test_funasr_e2e.py
+# core/audio 纯逻辑单测（stdlib unittest，pytest 兼容）
+pytest tests/            # 或 python tests/test_audio_logic.py
 ```
 
-无 pytest 测试套件——`test_*.py` 是独立诊断脚本，依赖 `data/staging/` 下的现成 wav/jpg 素材与已配置的 `~/.airecorder/config.json`。
+`test_ai_chains.py` 是独立诊断脚本（按 `--chain` 选链路，每条链独立子进程）。
 
 ## 架构
 
@@ -63,7 +65,7 @@ get_registry().reinitialize()           # 转写连接器
 
 | tier | connector | 说明 |
 |------|-----------|------|
-| free | `openai_whisper` | 硅基流动 TeleSpeechASR（OpenAI 兼容） |
+| free | `openai_whisper` | 硅基流动 SenseVoiceSmall（OpenAI 兼容） |
 | realtime | `dashscope_realtime` / `dashscope_realtime_stream` | 阿里 paraformer-realtime-8k-v2，WebSocket 实时流 |
 | pro_lite | `volc_doubao_file` | 火山豆包，submit+query，**音频需 SFTP 托管** |
 | pro_pro | `dashscope_funasr` | 阿里 fun-asr-flash，同步 REST，≤5min |
@@ -94,7 +96,7 @@ get_registry().reinitialize()           # 转写连接器
 
 ### pro_lite 的外部依赖
 
-火山豆包服务端需用公网 HTTP URL 拉取音频（无法解析 DashScope 的 `oss://`），故 `core/transcription/audio_hosting.py` 用 paramiko SFTP 把本地 wav 上传到公网服务器（`8.130.23.56`，SSH 免密已配置），返回 `http://8.130.23.56/airecorder/recordings/<uuid>.wav`。该 tier 依赖此服务器在线 + nginx 暴露目录（配置见 `.trae/documents/nginx_airecorder.conf`）。
+火山豆包服务端需用公网 HTTP URL 拉取音频（无法解析 DashScope 的 `oss://`），故 `core/transcription/audio_hosting.py` 用 paramiko SFTP 把本地 wav 上传到公网服务器（`8.130.23.56`，SSH 免密已配置），返回 `http://8.130.23.56/airecorder/recordings/<uuid>.wav`。该 tier 依赖此服务器在线 + nginx 暴露目录。
 
 ## 关键约定
 
@@ -103,7 +105,7 @@ get_registry().reinitialize()           # 转写连接器
 - **音频格式**：统一 16kHz / 16-bit / mono WAV（`AudioRecorder` 常量）。
 - **延迟导入**：`sounddevice`、`paramiko`、`cv2` 在方法内延迟导入，避免无硬件/未装依赖时 `import` 失败。
 - **注释/文档串一律中文**，与现有代码风格一致。
-- 架构规划文档在 `.trae/documents/`（`三版本AI录音应用架构规划.md`、`实施路线图.md`）。
+- 运行命令与当前架构速览见根目录 `AGENTS.md`。
 
 ## 项目清理记录
 
@@ -113,6 +115,6 @@ get_registry().reinitialize()           # 转写连接器
 - **项目源码树 `__pycache__/`**（14 个目录）：Python 字节码缓存，纯衍生产物，由源 `.py` 编译生成，运行时自动重建。已 gitignored。
 - **`data/staging/rec_*.wav`**（3 个文件，约 2.4 MB）：录音 staging 副本，`RecordingService.store_audio()` 已将字节级一致的副本写入 `data/storage/recordings/YYYY/MM/DD/`，staging 端为冗余残留。删除前用 SHA256 校验 staging 与 storage 副本完全一致。
 
-**保留**：`data/staging/test.wav`（被 `test_funasr_e2e.py` 引用）；`myenv/`（虚拟环境，重建成本高）；`.env`（API key）；`data/airecorder.db` 与 `data/storage/recordings/`（用户数据）；3 个根目录 `test_*.py`（活跃测试）；`.trae/documents/` 设计/部署文档。
+**保留**：`data/staging/test.wav`、`myenv/`（虚拟环境，重建成本高）；`.env`（API key）；`data/airecorder.db` 与 `data/storage/recordings/`（用户数据）；根目录 `test_ai_chains.py`（活跃诊断脚本）。
 
-**再生机制**：`__pycache__/` 在下次运行 `python main.py` 或 `python test_vad.py` 时由 CPython 自动重建，无需任何手动操作。
+**再生机制**：`__pycache__/` 在下次运行 `python main.py` 时由 CPython 自动重建，无需任何手动操作。
