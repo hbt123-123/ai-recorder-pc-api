@@ -1,0 +1,53 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+pip-wheel-metadata/
+
+# 测试 / 静态检查缓存
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Virtual environment
+myenv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.code-workspace
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+$RECYCLE.BIN/
+
+# 编辑器 / Office 临时文件
+*~
+*.tmp
+~$*
+
+# Environment（.env 含真实密钥，勿提交；模板 .env.example 例外）
+.env
+.env.local
+.env.*
+!.env.example
+
+# 日志
+*.log
+logs/
+
+# Runtime data (本版本独立运行时产物)
+# 注意：必须用前导 / 锚定到仓库根，否则 models/ 会误伤源码包 core/models/
+/models/
+/data/
