@@ -1,19 +1,37 @@
 """凭证读取模块：所有第三方 ASR / VLM / LLM / 服务器托管密钥集中从 .env 加载。
 
-密钥定义在仓库根目录 .env（已 gitignore，勿提交），模板见 .env.example：
-    cp .env.example .env   # 填入真实值
+.env 位置（按优先级依次加载；load_dotenv 默认不覆盖已有环境变量，多文件只会互补缺失项）：
+- 开发态：仓库根目录 .env（已 gitignore，勿提交），模板见 .env.example：
+      cp .env.example .env   # 填入真实值
+- 打包产物（PyInstaller / Nuitka）：优先 exe 同目录 .env（分发时放这里即可），
+  再兜底打包资源目录（PyInstaller onedir 为 _internal\\.env，历史位置）。
 
 本模块仅做 load_dotenv + os.environ 读取，不含任何硬编码密钥，可安全提交。
 """
 
 import os
+import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
 
-# 显式定位仓库根目录的 .env（不依赖 cwd，保证任意入口脚本都能加载）
-_REPO_ROOT = Path(__file__).resolve().parent.parent
-load_dotenv(_REPO_ROOT / ".env")
+
+def _env_candidates() -> list[Path]:
+    """按优先级返回候选 .env 路径（不依赖 cwd，保证任意入口脚本都能加载）。"""
+    if getattr(sys, "frozen", False):
+        # 冻结态：exe 同目录最直观（用户解压后直接把 .env 放在 exe 旁）
+        candidates = [Path(sys.executable).resolve().parent / ".env"]
+        # 兜底：打包资源目录。PyInstaller onedir 下本文件位于 _internal 内，
+        # parent.parent 即 _MEIPASS；onefile 下为临时解包目录（仅作兼容）。
+        bundled = Path(__file__).resolve().parent.parent / ".env"
+        if bundled not in candidates:
+            candidates.append(bundled)
+        return candidates
+    return [Path(__file__).resolve().parent.parent / ".env"]
+
+
+for _candidate in _env_candidates():
+    load_dotenv(_candidate)
 
 
 def _require(name: str) -> str:

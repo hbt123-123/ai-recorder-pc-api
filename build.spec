@@ -1,46 +1,128 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller 打包配置（AI 录音 PC API 版）。
+r"""PyInstaller 打包配置（AI 录音 PC API 版）。
 
 构建命令：
     pyinstaller build.spec
 
 产物：dist/AIRecorder/ 目录 + dist/AIRecorder.exe 入口。
 
-体积背景：
-- 旧版对 PySide6 无脑 collect_all('PySide6')，把整套 Qt 技术栈搬进产物：
-  QtWebEngine/Chromium（约 150MB）、3D / Charts / DataVisualization / Quick3D /
-  Pdf 等 Addons、全部官方翻译 .qm（约 30MB）、整个 PySide6/qml 目录（约 20MB），
-  外加每一个 Qt6*.dll 与 PySide6 *.pyd，最终包体约 700MB。
-- 本应用实际只 import 四个模块：QtCore / QtGui / QtWidgets / QtMultimedia
-  （音频播放）。上述资源全部用不上，现已改为「excludes 声明式排除 +
-  Analysis 之后的 TOC 兜底过滤」双保险，功能零损失。
-  实测（Linux，同一份 spec）：1029MB → 463MB，其中 PySide6 目录 673MB → 144MB。
-- 体积下限说明：PySide6（Qt + FFmpeg 后端）+ numpy 已占去绝大部分预算，
-  因此「< 100MB」在不放弃 opencv 的前提下无法达成；成品里 cv2 仍约 80MB
-  （仅用于摄像头抓帧）。若要进一步压缩，需先把摄像头采集改为 Qt Multimedia。
-- Qt 插件（platforms / imageformats / styles / multimedia 等）无需手动收集：
-  PyInstaller 内置的 PySide6 hooks 会按实际 import 自动带上所需插件。
+体积背景（两轮瘦身）：
+- 第一轮：不再 collect_all('PySide6')，改为 excludes 声明式排除 + TOC 兜底过滤，
+  剔掉 QtWebEngine/Chromium、3D / Charts / DataVisualization / Quick3D /
+  Pdf 等 Addons、全部官方翻译 .qm、整个 PySide6/qml 目录，功能零损失。
+- 第二轮（本版）：按「对产物全量 PE 导入表反查」的结果继续剔除幽灵依赖
+  （每个候选项先扫 dist 内全部 PE 文件，确认除彼此外没有任何引用者才剔除）：
+  * opengl32sw.dll（约 19.7MB）：软件 OpenGL 兜底库，只在真正创建 GL 上下
+    文时才动态加载；本应用是纯 QWidget/QPainter 界面（无 QOpenGLWidget、
+    无 Qt Quick），无任何 PE 文件引用它。
+  * Qt6Qml / Qt6Quick / Qt6OpenGL / Qt6QmlModels / Qt6QmlMeta /
+    Qt6QmlWorkerScript / Qt6VirtualKeyboard（合计约 14.4MB）：唯一把它们
+    拖进产物的是虚拟键盘插件 platforminputcontexts/qtvirtualkeyboardplugin.dll
+    （桌面物理键盘应用不需要）。注意：多媒体 FFmpeg 播放插件
+    (plugins/multimedia/ffmpegmediaplugin.dll) 的导入表只依赖
+    Qt6Multimedia.dll + Qt6Core.dll，与 Qml/Quick 无关——旧注释「必须保留
+    Qt6Qml/Qt6Quick」是误判，反查已证伪。
+  * Qt6Pdf.dll（4.4MB）+ imageformats/qpdf.dll、Qt6Svg.dll（0.6MB）+
+    iconengines/qsvgicon.dll、imageformats/qsvg.dll：应用不读写 PDF/SVG
+    （assets 全为 png/ico，界面图标由 QPainter 绘制）。
+  * 其余未用插件：qdirect2d / qoffscreen / qminimal（备用 QPA，不设置
+    QT_QPA_PLATFORM 时永不加载）；qtiff / qwebp / qgif / qicns / qtga /
+    qwbmp（拍照与截屏只产 .jpg，选图对话框限定 jpg/jpeg/png/bmp，png/bmp
+    为 QtGui 内置格式；保留 qjpeg 供 jpg、qico 供应用图标）。
+  * cv2 的 FFmpeg videoio 后端 opencv_videoio_ffmpeg*_64.dll（约 29.5MB）：
+    应用只做相机抓帧，Windows 上 CAP_ANY 先走 MSMF/DSHOW，该 DLL 仅服务
+    CAP_FFMPEG 读视频文件。可用下方 DROP_CV2_FFMPEG 开关恢复。
+- UPX：PyInstaller 只在 PATH 里能执行到 upx.exe 时才压缩，找不到会「静默
+  跳过」——产物直接大 100MB+ 且没有任何报错（此前 297.8MB 的产物即未压缩
+  状态）。本 spec 会自动探测 tools/upx-*/upx.exe 并加入 PATH，探测失败时
+  打印醒目中文警告。UPX 为预编译二进制，不需要任何 C++ 工具链；本仓库已把
+  UPX 5.2.1 win64 预编译包提交在 tools/upx-5.2.1-win64/（约 1.7MB），构建机
+  开箱即用（换版本/缺失时跑 tools/fetch_upx.ps1 重新下载即可）。
+- 体积下限说明：PySide6（Qt + FFmpeg 后端）+ numpy(OpenBLAS) + cv2 已占去
+  绝大部分预算；若要再压掉 cv2 的约 112MB，需把摄像头采集改为
+  Qt Multimedia（QCamera/QImageCapture，见 pc_api/camera.py），属代码改造。
 
 验证方法（打包后逐项手测）：
 - 启动 dist/AIRecorder/AIRecorder.exe，确认界面正常、控制台无报错；
-- 历史页音频播放（QtMultimedia）、摄像头拍照、截屏选区均正常；
+- 历史页音频播放（QtMultimedia FFmpeg 后端；务必覆盖 .m4a/.flac/.ogg 各
+  一首）、摄像头拍照、截屏选区均正常；
 - 录音 + 转写（含 realtime 档位）正常。
-- 若启动异常：先把 USE_UPX 改为 False 重新打包，再按被剔除清单逐项排查。
+- 若启动异常：先把 USE_UPX 改为 False 重新打包（排除 UPX 因素），再按被
+  剔除清单逐项排查。
+- 若音频播放异常：优先怀疑虚拟键盘/Qml 剔除链条，把 _PLUGIN_DROP 中
+  platforminputcontexts 一条与 _DLL_PREFIXES 中 'Qt6Qml' / 'Qt6Quick' /
+  'Qt6OpenGL' / 'Qt6VirtualKeyboard' 注释掉重建即可恢复。
+
+实测记录（2026-10-17，Windows x64 / PyInstaller 6.22.2 / UPX 5.2.1 / Python 3.12.6）：
+- 同机基线：未压缩 305.6MB（347 文件）→ 仅让 UPX 生效 127.8MB → 叠加本
+  轮裁剪 107.8MB（318 文件，较未压缩基线 -64.7%）；主 exe 17.1MB。
+  测试机此前的 PyInstaller 297.8MB / Nuitka 389.3MB 均为「UPX 未生效」的
+  未压缩产物——最大的一刀不是换打包器，而是让 UPX 真正跑起来。
+- 剔除计数（构建日志）：translations 124、Qt6*.dll 15（含 PortAudio 非
+  x64 变体 5）、Qt 插件 13、cv2 FFmpeg videoio 1。
+- 体积下限：产物中 68 个带 CFG 的 PE 文件共 50.9MB（Qt6Core/Gui/Widgets、
+  bootloader exe 与多数 Qt 插件），PyInstaller 与 UPX 都按安全策略拒绝压缩
+  （对 Qt DLL 用 upx --force 实测可压到 ~34%，但 CFG 守护表失效有运行
+  风险）。如需再压这一档，用 tools\upx_compress_dist.ps1 -Force 并做完整
+  回归（启动、播放 m4a/flac/ogg、摄像头、截屏、录音转写）后再决定。
+- 剩余大头：cv2.pyd 20.3MB（UPX 后）、主 exe 17.1MB、Qt6Core/Qt6Gui/
+  Qt6Widgets 25.2MB（CFG 不可压）、python312.dll 6.6MB、FFmpeg 全家桶
+  （av*) 7.4MB、numpy/OpenBLAS 3.7MB。
+- 首启目录：产物首次运行时 data/ 目录由 core.models.init_engine 自动创建
+  （此前缺失会导致 "unable to open database file" 启动失败——属既有打包
+  问题，已修）；相机照片保存改走 imencode + write_bytes，中文路径安全
+  （既有 cv2.imwrite 在非 ASCII 路径下会失败/乱码，已修）。
+- 凭证 .env 查找顺序（pc_api/credentials.py）：冻结态优先 exe 同目录 .env
+  （分发时放 exe 旁即可），其次打包资源目录（PyInstaller onedir 为
+  _internal\.env，历史位置）；开发态保持仓库根目录。多个文件按序互补缺失项，
+  且不覆盖已有环境变量。
 """
+
+import glob
+import os
+import shutil
 
 from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 block_cipher = None
 
+# ---- UPX 自动探测 -----------------------------------------------------------
+# 探测顺序：tools/upx-*/upx.exe（如 tools/upx-5.2.1-win64/upx.exe，取版本号
+# 最大者）→ tools/upx/upx.exe → 系统 PATH。找到即注入 PATH 供 PyInstaller
+# 的 upx 压缩步骤使用；找不到时大声警告（否则会静默产出未压缩的巨大包）。
+_SPEC_DIR = globals().get('SPECPATH', os.getcwd())
+_upx_candidates = []
+for _pat in ('tools/upx*/upx.exe', 'tools/upx/*/upx.exe', 'tools/upx/upx.exe'):
+    _upx_candidates += sorted(glob.glob(os.path.join(_SPEC_DIR, _pat)))
+for _cand in reversed(_upx_candidates):
+    if os.path.isfile(_cand):
+        os.environ['PATH'] = os.path.dirname(_cand) + os.pathsep + os.environ.get('PATH', '')
+        break
+if shutil.which('upx'):
+    print(f"[build.spec] 已启用 UPX 压缩：{shutil.which('upx')}")
+else:
+    print('[build.spec] 警告：未找到 upx.exe，产物将不做任何压缩（预计大出 100MB+）！'
+          '请把 UPX win64 发行包解压到 tools/ 下（如 tools/upx-5.2.1-win64/upx.exe）'
+          '或将其加入 PATH 后重新打包。')
+
 # UPX 压缩开关：UPX 压缩 Qt 官方 DLL 有可能触发杀软误报，个别环境下还会
 # 出现解压加载失败导致 exe 无法启动；产物启动异常时改为 False 重打包即可。
 USE_UPX = True
 
+# cv2 自带 FFmpeg videoio 后端（opencv_videoio_ffmpeg*_64.dll，约 29.5MB）：
+# 应用只用 cv2.VideoCapture(相机索引) + cv2.imwrite，Windows 默认后端为
+# MSMF/DSHOW，不会加载该 DLL（它只服务 CAP_FFMPEG 读视频文件/网络流）。
+# 若将来需要 cv2 读视频文件，把此开关改为 False 重新打包即可。
+DROP_CV2_FFMPEG = True
+
 # 不交给 UPX 压缩的运行时关键 DLL：压缩 python3xx.dll / MSVC 运行库是已知的
 # 启动失败与杀软误报来源，收益又远不及 Qt 那些大体积 DLL。Qt6 系列仍参与压缩。
+# 与 PyInstaller 内置默认排除清单保持一致的超集。
 _UPX_EXCLUDE = [
-    'vcruntime140.dll', 'vcruntime140_1.dll', 'msvcp140.dll',
-    'python3*.dll', 'ucrtbase.dll',
+    'vcruntime140.dll', 'vcruntime140_1.dll', 'vcruntime140_2.dll',
+    'msvcp140.dll', 'msvcp140_1.dll', 'msvcp140_2.dll',
+    'concrt140.dll', 'vccorlib140.dll', 'vcamp140.dll', 'vcomp140.dll',
+    'python3*.dll', 'ucrtbase.dll', 'api-ms-win-*.dll',
 ]
 
 # ---- 收集含原生二进制（DLL/so）的依赖 ----
@@ -113,8 +195,12 @@ a = Analysis(
         'tests', 'generate_icons', 'test_ai_chains',
         # ---- PySide6 未使用的 Addons + 部分 Essentials ----
         # 保留：QtCore / QtGui / QtWidgets / QtMultimedia / QtNetwork
-        #（QtMultimedia 可能依赖 QtNetwork）以及 shiboken6、PySide6/plugins，
+        #（QtMultimedia 依赖 QtNetwork）以及 shiboken6、PySide6/plugins，
         # 切勿加入本列表。
+        # 注意：Python 层 excludes 只能挡住「被 import 的模块」；下面这些
+        # Qt6*.dll 会经由多媒体/虚拟键盘等插件的二进制依赖闭包混进 TOC，
+        # 所以必须由 Analysis 之后的 TOC 兜底过滤（见 _PLUGIN_DROP /
+        # _DLL_PREFIXES）再拦一道。
         'PySide6.QtWebEngineCore', 'PySide6.QtWebEngineWidgets',
         'PySide6.QtWebEngineQuick', 'PySide6.QtWebChannel',
         'PySide6.QtWebSockets', 'PySide6.QtCharts',
@@ -143,19 +229,22 @@ a = Analysis(
 
 
 # ---- 防御性 TOC 过滤 ------------------------------------------------------
-# excludes 之外的兜底：即使某些 Qt6*.dll / qml / translations 因 hook 行为
-# 变化混进 TOC，也在这里按目标路径剔除，绝不进入 COLLECT。
+# excludes 之外的兜底：即使某些 Qt6*.dll / 插件 / qml / translations 因 hook
+# 行为变化混进 TOC，也在这里按目标路径剔除，绝不进入 COLLECT。
 # 只统计、不逐文件打印（动辄上千条）。
-# 实测约束（切勿「顺手」扩大下方剔除清单）：
-# - Qt6Qml* / Qt6Quick* 必须保留：Qt Multimedia 的 FFmpeg 后端插件
-#   plugins/multimedia/*ffmpegmediaplugin* 依赖它们；而本应用上传白名单含
-#   .flac/.ogg/.mp3/.m4a，播放器必须走 FFmpeg 后端，不能改用 Windows 原生
-#   后端（原生后端只覆盖 wav/mp3，会丢 m4a/aac/flac 播放能力）。
-# - Qt6Svg / Qt6Pdf / Qt6VirtualKeyboard 保留：分别被已随包的插件
-#   iconengines/qsvgicon、imageformats/qpdf、platforminputcontexts/
-#   qtvirtualkeyboardplugin 依赖，剔除会留下加载失败的悬空插件。
-#   三者合计仅数 MB，不值得冒风险。
-# - avcodec-* / avformat-* / avutil-* / swresample-* / swscale-* 保留（同上）。
+#
+# 剔除依据：对一次完整产物做「PE 导入表反查」——扫描 dist 内全部文件（693
+# 个）中对每个候选 DLL 名的 ASCII 引用，确认候选之间的依赖是闭环的、且没有
+# 其它文件引用它们之后才剔除。未曾验证的条目不要凭印象加进来。
+# 必须保留（已实测依赖）：
+# - plugins/multimedia/ffmpegmediaplugin.dll：本应用上传白名单含
+#   .flac/.ogg/.mp3/.m4a，播放器必须走 FFmpeg 后端（Windows 原生后端只覆盖
+#   wav/mp3，会丢 m4a/aac/flac）。它只依赖 Qt6Multimedia.dll + Qt6Core.dll。
+# - plugins/multimedia/windowsmediaplugin.dll：备用原生后端，体积仅 0.3MB。
+# - 保留的图片插件 qjpeg（拍照/截屏 .jpg）与 qico（应用图标）。
+# - plugins/styles/qmodernwindowsstyle.dll（Windows 11 风格）、
+#   platforms/qwindows.dll（标准 QPA）、networkinformation/qnetworklistmanager
+#   （QtNetwork 依赖）、generic/qtuiotouchplugin（触摸输入）。
 
 # 目标路径 basename 命中以下前缀的 Qt 库一律剔除；只列「无插件依赖」的
 # Addons / 未用模块，故不会造成悬空插件。Windows 侧形如 Qt6Sql.dll，
@@ -169,11 +258,46 @@ _DLL_PREFIXES = (
     'Qt6RemoteObjects', 'Qt6Scxml', 'Qt6TextToSpeech',
     'Qt6SpatialAudio', 'Qt6NetworkAuth', 'Qt6HttpServer',
     'Qt6SvgWidgets',
+    # ---- 第二轮新增（反查确认闭环、无外部引用）----
+    'Qt6Qml', 'Qt6Quick', 'Qt6OpenGL', 'Qt6VirtualKeyboard',
+    'Qt6Pdf', 'Qt6Svg',
+    # 软件 OpenGL 兜底（纯 QWidget 应用不创建 GL 上下文）
+    'opengl32sw',
+    # sounddevice 携带的多架构 PortAudio：x64-Windows 产物只需要 64bit 两个
+    # 变体（libportaudio64bit.dll 与 libportaudio64bit-asio.dll），32bit /
+    # arm64 / macOS 变体在同一产物里永远加载不到。
+    'portaudio32bit', 'portaudioarm64', 'portaudio.dylib',
 )
 _DLL_PREFIXES_LOWER = tuple(p.lower() for p in _DLL_PREFIXES)
 
+# 按完整目标路径（posix 风格、小写、后缀匹配）精确剔除的插件文件。
+# 与上面的 DLL 前缀清单配合：插件与被它拉进来的 DLL 必须成对剔除，
+# 否则会留下「悬空插件」（运行时加载失败刷日志）。
+_PLUGIN_DROP = (
+    # 虚拟键盘：桌面物理键盘应用不需要；且它是唯一把 Qt6VirtualKeyboard /
+    # Qt6Quick / Qt6Qml / Qt6OpenGL 拖进产物的根源。
+    'pyside6/plugins/platforminputcontexts/qtvirtualkeyboardplugin.dll',
+    # SVG 图标引擎：应用不用 SVG（assets 全为 png/ico）。
+    'pyside6/plugins/iconengines/qsvgicon.dll',
+    # 备用 QPA 平台插件：不设置 QT_QPA_PLATFORM 环境变量时永不加载。
+    'pyside6/plugins/platforms/qdirect2d.dll',
+    'pyside6/plugins/platforms/qoffscreen.dll',
+    'pyside6/plugins/platforms/qminimal.dll',
+    # 图片格式插件：只保留 qjpeg（.jpg）与 qico（.ico）；png/bmp 是 QtGui
+    # 内置格式，其余格式应用既不产出也读不到（选图对话框限定
+    # jpg/jpeg/png/bmp）。
+    'pyside6/plugins/imageformats/qpdf.dll',
+    'pyside6/plugins/imageformats/qsvg.dll',
+    'pyside6/plugins/imageformats/qtiff.dll',
+    'pyside6/plugins/imageformats/qwebp.dll',
+    'pyside6/plugins/imageformats/qgif.dll',
+    'pyside6/plugins/imageformats/qicns.dll',
+    'pyside6/plugins/imageformats/qtga.dll',
+    'pyside6/plugins/imageformats/qwbmp.dll',
+)
+
 # 每类剔除条目的计数器，最后各打印一行中文汇总
-_dropped = {'qml': 0, 'translations': 0, 'qt-dll': 0}
+_dropped = {'qml': 0, 'translations': 0, 'qt-dll': 0, 'qt-plugin': 0, 'cv2-ffmpeg': 0}
 
 
 def _dest_str(entry):
@@ -188,16 +312,21 @@ def _dest_str(entry):
 
 
 def _category(dest):
-    """命中剔除规则返回类别（'qml' / 'translations' / 'qt-dll'），否则 None。"""
+    """命中剔除规则返回类别（'qml' / 'translations' / 'qt-dll' / 'qt-plugin'
+    / 'cv2-ffmpeg'），否则 None。"""
     low = dest.lower()
     if 'pyside6/qml/' in low:
         return 'qml'
     if 'pyside6/translations/' in low:
         return 'translations'
+    if any(low.endswith(p) for p in _PLUGIN_DROP):
+        return 'qt-plugin'
     base = low.rsplit('/', 1)[-1]
-    is_lib = base.endswith('.dll') or '.so.' in base or base.endswith('.so')
+    is_lib = base.endswith(('.dll', '.dylib')) or '.so.' in base or base.endswith('.so')
     if not is_lib:
         return None
+    if DROP_CV2_FFMPEG and base.startswith('opencv_videoio_ffmpeg'):
+        return 'cv2-ffmpeg'
     # Windows 侧为 Qt6Sql.dll；Linux 侧为 libQt6Sql.so.6——必须剥离 lib 前缀，
     # 否则 .so 分支永远匹配不上（曾因此让 Linux 侧的规则形同虚设）。
     stem = base[3:] if base.startswith('lib') else base
@@ -228,6 +357,8 @@ a.zipfiles = _filter_toc(a.zipfiles)
 print(f"[build.spec] 已剔除 PySide6/qml 条目 {_dropped['qml']} 个")
 print(f"[build.spec] 已剔除 PySide6/translations 条目 {_dropped['translations']} 个")
 print(f"[build.spec] 已剔除无用 Qt6*.dll 条目 {_dropped['qt-dll']} 个")
+print(f"[build.spec] 已剔除无用 Qt 插件条目 {_dropped['qt-plugin']} 个")
+print(f"[build.spec] 已剔除 cv2 FFmpeg videoio 条目 {_dropped['cv2-ffmpeg']} 个")
 
 # ---------------------------------------------------------------------------
 

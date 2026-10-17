@@ -34,9 +34,14 @@ class CameraCapture:
             if not ret or frame is None:
                 raise RuntimeError("摄像头读取失败")
             Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-            ok = cv2.imwrite(output_path, frame)
+            # 用 imencode + write_bytes 而非 cv2.imwrite：OpenCV 的 imwrite 在
+            # Windows 上走 ANSI 文件 API，路径含非 ASCII 字符（中文用户名 / 中文
+            # 安装目录，打包产物极易出现）时会失败或写出乱码文件名（已实测复现）。
+            # imencode 只管内存编码，磁盘写入交给 Python 处理 Unicode 路径。
+            ok, buf = cv2.imencode(".jpg", frame)
             if not ok:
-                raise RuntimeError(f"图片保存失败: {output_path}")
+                raise RuntimeError(f"图片编码失败: {output_path}")
+            Path(output_path).write_bytes(buf.tobytes())
             return output_path
         finally:
             cap.release()

@@ -30,6 +30,27 @@ _engine: Optional[Engine] = None
 _SessionLocal: Optional[sessionmaker] = None
 
 
+def _ensure_sqlite_dir(url: str) -> None:
+    """SQLite 文件型数据库自动创建父目录。
+
+    打包产物（PyInstaller / Nuitka）首次运行时磁盘上没有 data/ 目录，
+    而 SQLite 不会自动建目录，会直接报 "unable to open database file"
+    导致启动失败（main.py 的启动兜底会弹「启动失败」）。开发态因仓库里
+    已有 data/ 目录，长期未暴露此问题。
+    """
+    from pathlib import Path
+
+    from sqlalchemy.engine import make_url
+
+    parsed = make_url(url)
+    if parsed.get_backend_name() != "sqlite":
+        return
+    database = parsed.database
+    if not database or database == ":memory:":
+        return
+    Path(database).expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
+
+
 def init_engine(database_url: Optional[str] = None) -> Engine:
     """初始化全局 engine 与 session 工厂。
 
@@ -38,6 +59,7 @@ def init_engine(database_url: Optional[str] = None) -> Engine:
     """
     global _engine, _SessionLocal
     url = database_url or get_config().database_url
+    _ensure_sqlite_dir(url)
     _engine = create_engine(url, future=True)
     _SessionLocal = sessionmaker(bind=_engine, expire_on_commit=False, future=True)
     return _engine
